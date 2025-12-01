@@ -1,7 +1,7 @@
 {
   "name": "tips-mcp-server",
-  "version": "1.0.0",
-  "description": "Tips MCP Server for Nông Trí - Contextual farming tips with categories and colors",
+  "version": "2.0.0",
+  "description": "Tips MCP Server for Nông Trí - Database-backed farming tips with AI generation",
   "main": "src/index.js",
   "type": "module",
   "scripts": {

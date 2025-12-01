@@ -2,12 +2,24 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import fetch from 'node-fetch';
+import pg from 'pg';
 
 dotenv.config();
 
 const app = express();
 const PORT = process.env.PORT || 3006;
 const WEATHER_API_URL = process.env.WEATHER_API_URL || 'https://weatherapi-mcp.up.railway.app';
+
+// Database connection
+const pool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+});
+
+// Test database connection on startup
+pool.query('SELECT NOW()')
+  .then(() => console.log('✓ Database connected'))
+  .catch(err => console.error('✗ Database connection failed:', err.message));
 
 // Middleware
 app.use(cors({
@@ -17,431 +29,229 @@ app.use(cors({
 }));
 app.use(express.json());
 
-/**
- * Tip Categories with colors (hex values for mobile app)
- * Colors are designed for both light and dark mode compatibility
- */
-const TIP_CATEGORIES = {
-  weather_alert: {
-    id: 'weather_alert',
-    name_vi: 'Cảnh báo thời tiết',
-    name_en: 'Weather Alert',
-    icon: '⚠️',
-    color: '#F59E0B',        // Amber - warning color
-    backgroundColor: '#FEF3C7',
-    priority: 1              // Highest priority
-  },
-  pest_control: {
-    id: 'pest_control',
-    name_vi: 'Phòng trừ sâu bệnh',
-    name_en: 'Pest Control',
-    icon: '🐛',
-    color: '#EF4444',        // Red - urgent/important
-    backgroundColor: '#FEE2E2',
-    priority: 2
-  },
-  irrigation: {
-    id: 'irrigation',
-    name_vi: 'Tưới tiêu',
-    name_en: 'Irrigation',
-    icon: '💧',
-    color: '#3B82F6',        // Blue - water related
-    backgroundColor: '#DBEAFE',
-    priority: 3
-  },
-  planting: {
-    id: 'planting',
-    name_vi: 'Gieo trồng',
-    name_en: 'Planting',
-    icon: '🌱',
-    color: '#10B981',        // Green - growth
-    backgroundColor: '#D1FAE5',
-    priority: 4
-  },
-  harvesting: {
-    id: 'harvesting',
-    name_vi: 'Thu hoạch',
-    name_en: 'Harvesting',
-    icon: '🌾',
-    color: '#F97316',        // Orange - harvest color
-    backgroundColor: '#FFEDD5',
-    priority: 5
-  },
-  livestock: {
-    id: 'livestock',
-    name_vi: 'Chăn nuôi',
-    name_en: 'Livestock',
-    icon: '🐄',
-    color: '#8B5CF6',        // Purple
-    backgroundColor: '#EDE9FE',
-    priority: 6
-  },
-  market: {
-    id: 'market',
-    name_vi: 'Thị trường',
-    name_en: 'Market',
-    icon: '📈',
-    color: '#06B6D4',        // Cyan
-    backgroundColor: '#CFFAFE',
-    priority: 7
-  },
-  seasonal: {
-    id: 'seasonal',
-    name_vi: 'Theo mùa',
-    name_en: 'Seasonal',
-    icon: '📅',
-    color: '#EC4899',        // Pink
-    backgroundColor: '#FCE7F3',
-    priority: 8
-  },
-  general: {
-    id: 'general',
-    name_vi: 'Mẹo chung',
-    name_en: 'General Tips',
-    icon: '💡',
-    color: '#6366F1',        // Indigo
-    backgroundColor: '#E0E7FF',
-    priority: 9
-  }
-};
+// ============================================================================
+// DATABASE QUERIES
+// ============================================================================
 
 /**
- * Tips Database - Comprehensive farming tips for Vietnamese farmers
- * Each tip has Vietnamese and English versions
+ * Get all tip categories from database
  */
-const TIPS_DATABASE = [
-  // Weather Alert Tips
-  {
-    id: 'weather_1',
-    category: 'weather_alert',
-    title_vi: 'Chuẩn bị cho mưa lớn',
-    title_en: 'Prepare for Heavy Rain',
-    content_vi: 'Dự báo mưa lớn trong 24h tới. Hãy kiểm tra hệ thống thoát nước và che chắn cây trồng non.',
-    content_en: 'Heavy rain forecast in next 24h. Check drainage systems and protect young plants.',
-    conditions: { rain_chance_above: 70 },
-    actionable: true,
-    action_vi: 'Kiểm tra thoát nước',
-    action_en: 'Check drainage'
-  },
-  {
-    id: 'weather_2',
-    category: 'weather_alert',
-    title_vi: 'Cảnh báo nắng nóng',
-    title_en: 'Heat Wave Warning',
-    content_vi: 'Nhiệt độ cao trên 35°C. Tưới nước vào sáng sớm hoặc chiều tối, tránh tưới giữa trưa.',
-    content_en: 'Temperature above 35°C. Water early morning or late evening, avoid midday watering.',
-    conditions: { temp_above: 35 },
-    actionable: true,
-    action_vi: 'Điều chỉnh lịch tưới',
-    action_en: 'Adjust watering schedule'
-  },
-  {
-    id: 'weather_3',
-    category: 'weather_alert',
-    title_vi: 'Gió mạnh sắp đến',
-    title_en: 'Strong Wind Warning',
-    content_vi: 'Gió mạnh dự kiến. Buộc chặt cây cao và kiểm tra nhà kính, lưới che.',
-    content_en: 'Strong winds expected. Secure tall plants and check greenhouses, shade nets.',
-    conditions: { wind_above: 40 },
-    actionable: true,
-    action_vi: 'Cố định cây trồng',
-    action_en: 'Secure plants'
-  },
+async function getCategories(lang = 'vi') {
+  const result = await pool.query(`
+    SELECT id, name_vi, name_en, icon, color, background_color, priority
+    FROM tip_categories
+    WHERE active = true
+    ORDER BY priority ASC
+  `);
 
-  // Pest Control Tips
-  {
-    id: 'pest_1',
-    category: 'pest_control',
-    title_vi: 'Kiểm tra sâu bệnh định kỳ',
-    title_en: 'Regular Pest Inspection',
-    content_vi: 'Kiểm tra mặt dưới lá và thân cây mỗi tuần. Phát hiện sớm giúp xử lý hiệu quả hơn.',
-    content_en: 'Check underside of leaves and stems weekly. Early detection enables more effective treatment.',
-    conditions: {},
-    actionable: true,
-    action_vi: 'Chụp ảnh để phân tích',
-    action_en: 'Take photo for analysis'
-  },
-  {
-    id: 'pest_2',
-    category: 'pest_control',
-    title_vi: 'Phòng bệnh sau mưa',
-    title_en: 'Post-Rain Disease Prevention',
-    content_vi: 'Sau mưa, độ ẩm cao dễ phát sinh nấm bệnh. Tỉa bớt lá úng, tăng thông thoáng.',
-    content_en: 'After rain, high humidity can cause fungal diseases. Prune damaged leaves, improve ventilation.',
-    conditions: { after_rain: true },
-    actionable: true,
-    action_vi: 'Tỉa lá bệnh',
-    action_en: 'Prune diseased leaves'
-  },
-  {
-    id: 'pest_3',
-    category: 'pest_control',
-    title_vi: 'Sử dụng thiên địch',
-    title_en: 'Use Natural Predators',
-    content_vi: 'Bọ rùa, ong ký sinh là thiên địch tự nhiên của rệp và sâu. Hạn chế thuốc hóa học để bảo vệ chúng.',
-    content_en: 'Ladybugs and parasitic wasps are natural predators of aphids and caterpillars. Limit chemicals to protect them.',
-    conditions: {},
-    actionable: false
-  },
-
-  // Irrigation Tips
-  {
-    id: 'irrigation_1',
-    category: 'irrigation',
-    title_vi: 'Tưới nước đúng cách',
-    title_en: 'Proper Watering Technique',
-    content_vi: 'Tưới sâu và ít lần tốt hơn tưới nông nhiều lần. Giúp rễ phát triển sâu và khỏe.',
-    content_en: 'Deep, infrequent watering is better than shallow, frequent watering. Helps roots grow deep and strong.',
-    conditions: {},
-    actionable: false
-  },
-  {
-    id: 'irrigation_2',
-    category: 'irrigation',
-    title_vi: 'Tiết kiệm nước mùa khô',
-    title_en: 'Water Conservation in Dry Season',
-    content_vi: 'Phủ rơm rạ quanh gốc cây để giữ ẩm đất, giảm bốc hơi nước.',
-    content_en: 'Mulch around plant bases with straw to retain soil moisture and reduce evaporation.',
-    conditions: { humidity_below: 50 },
-    actionable: true,
-    action_vi: 'Phủ rơm rạ',
-    action_en: 'Apply mulch'
-  },
-  {
-    id: 'irrigation_3',
-    category: 'irrigation',
-    title_vi: 'Kiểm tra độ ẩm đất',
-    title_en: 'Check Soil Moisture',
-    content_vi: 'Đặt ngón tay sâu 5cm vào đất. Nếu khô, cần tưới. Nếu ẩm, chờ thêm.',
-    content_en: 'Insert finger 5cm into soil. If dry, water needed. If moist, wait.',
-    conditions: {},
-    actionable: true,
-    action_vi: 'Kiểm tra ngay',
-    action_en: 'Check now'
-  },
-
-  // Planting Tips
-  {
-    id: 'planting_1',
-    category: 'planting',
-    title_vi: 'Chuẩn bị đất trước gieo',
-    title_en: 'Prepare Soil Before Planting',
-    content_vi: 'Bón phân hữu cơ và xới đất kỹ 2 tuần trước khi gieo hạt để đất tơi xốp.',
-    content_en: 'Add organic compost and till soil thoroughly 2 weeks before sowing for loose, fertile soil.',
-    conditions: {},
-    actionable: false
-  },
-  {
-    id: 'planting_2',
-    category: 'planting',
-    title_vi: 'Khoảng cách trồng hợp lý',
-    title_en: 'Proper Plant Spacing',
-    content_vi: 'Trồng đúng khoảng cách giúp cây có đủ ánh sáng, dinh dưỡng và giảm sâu bệnh.',
-    content_en: 'Proper spacing ensures adequate light, nutrients and reduces pest/disease spread.',
-    conditions: {},
-    actionable: false
-  },
-  {
-    id: 'planting_3',
-    category: 'planting',
-    title_vi: 'Thời điểm gieo hạt tốt nhất',
-    title_en: 'Best Seeding Time',
-    content_vi: 'Gieo hạt vào sáng sớm hoặc chiều mát. Tránh giữa trưa nắng gắt.',
-    content_en: 'Sow seeds in early morning or cool evening. Avoid hot midday sun.',
-    conditions: {},
-    actionable: false
-  },
-
-  // Harvesting Tips
-  {
-    id: 'harvesting_1',
-    category: 'harvesting',
-    title_vi: 'Thu hoạch đúng thời điểm',
-    title_en: 'Harvest at Right Time',
-    content_vi: 'Thu hoạch vào sáng sớm khi sương đã tan. Rau củ tươi ngon và bảo quản lâu hơn.',
-    content_en: 'Harvest early morning after dew dries. Vegetables stay fresher longer.',
-    conditions: {},
-    actionable: false
-  },
-  {
-    id: 'harvesting_2',
-    category: 'harvesting',
-    title_vi: 'Bảo quản sau thu hoạch',
-    title_en: 'Post-Harvest Storage',
-    content_vi: 'Để rau củ nơi thoáng mát, tránh ánh nắng trực tiếp. Không rửa nước trước khi bảo quản.',
-    content_en: 'Store vegetables in cool, ventilated area away from direct sunlight. Do not wash before storage.',
-    conditions: {},
-    actionable: false
-  },
-
-  // Livestock Tips
-  {
-    id: 'livestock_1',
-    category: 'livestock',
-    title_vi: 'Chăm sóc vật nuôi mùa nóng',
-    title_en: 'Livestock Care in Hot Weather',
-    content_vi: 'Đảm bảo đủ nước sạch và bóng mát cho vật nuôi. Tăng số lần cho uống nước.',
-    content_en: 'Ensure clean water and shade for livestock. Increase water frequency.',
-    conditions: { temp_above: 30 },
-    actionable: true,
-    action_vi: 'Kiểm tra nước',
-    action_en: 'Check water supply'
-  },
-  {
-    id: 'livestock_2',
-    category: 'livestock',
-    title_vi: 'Vệ sinh chuồng trại',
-    title_en: 'Barn Hygiene',
-    content_vi: 'Dọn vệ sinh chuồng trại hàng ngày để phòng bệnh và giữ môi trường sạch sẽ.',
-    content_en: 'Clean barns daily to prevent disease and maintain a healthy environment.',
-    conditions: {},
-    actionable: true,
-    action_vi: 'Dọn chuồng',
-    action_en: 'Clean barn'
-  },
-
-  // Market Tips
-  {
-    id: 'market_1',
-    category: 'market',
-    title_vi: 'Theo dõi giá nông sản',
-    title_en: 'Track Produce Prices',
-    content_vi: 'Theo dõi giá thị trường để quyết định thời điểm bán hàng tốt nhất.',
-    content_en: 'Monitor market prices to decide the best time to sell your produce.',
-    conditions: {},
-    actionable: true,
-    action_vi: 'Xem giá hôm nay',
-    action_en: 'Check today\'s prices'
-  },
-  {
-    id: 'market_2',
-    category: 'market',
-    title_vi: 'Đa dạng hóa cây trồng',
-    title_en: 'Diversify Crops',
-    content_vi: 'Trồng nhiều loại cây giúp giảm rủi ro khi giá một loại giảm.',
-    content_en: 'Growing multiple crops reduces risk when one crop\'s price drops.',
-    conditions: {},
-    actionable: false
-  },
-
-  // Seasonal Tips
-  {
-    id: 'seasonal_1',
-    category: 'seasonal',
-    title_vi: 'Chuẩn bị vụ đông xuân',
-    title_en: 'Prepare for Winter-Spring Season',
-    content_vi: 'Tháng 11-12 là thời điểm chuẩn bị đất cho vụ đông xuân. Lên kế hoạch giống và phân bón.',
-    content_en: 'November-December is time to prepare for winter-spring crop. Plan seeds and fertilizers.',
-    conditions: { month_in: [11, 12] },
-    actionable: true,
-    action_vi: 'Lên kế hoạch',
-    action_en: 'Make plan'
-  },
-  {
-    id: 'seasonal_2',
-    category: 'seasonal',
-    title_vi: 'Vụ hè thu bắt đầu',
-    title_en: 'Summer-Autumn Season Begins',
-    content_vi: 'Tháng 5-6 bắt đầu vụ hè thu. Chú ý mưa nhiều và sâu bệnh mùa ẩm.',
-    content_en: 'May-June starts summer-autumn season. Watch for heavy rain and wet season pests.',
-    conditions: { month_in: [5, 6] },
-    actionable: false
-  },
-
-  // General Tips
-  {
-    id: 'general_1',
-    category: 'general',
-    title_vi: 'Ghi chép canh tác',
-    title_en: 'Keep Farming Records',
-    content_vi: 'Ghi chép ngày gieo, bón phân, thu hoạch giúp cải thiện mùa vụ sau.',
-    content_en: 'Record sowing dates, fertilizing, harvesting to improve next season.',
-    conditions: {},
-    actionable: true,
-    action_vi: 'Ghi chép ngay',
-    action_en: 'Record now'
-  },
-  {
-    id: 'general_2',
-    category: 'general',
-    title_vi: 'Học hỏi từ hàng xóm',
-    title_en: 'Learn from Neighbors',
-    content_vi: 'Trao đổi kinh nghiệm với nông dân láng giềng để học kỹ thuật mới.',
-    content_en: 'Exchange experiences with neighboring farmers to learn new techniques.',
-    conditions: {},
-    actionable: false
-  },
-  {
-    id: 'general_3',
-    category: 'general',
-    title_vi: 'Chụp ảnh cây trồng',
-    title_en: 'Take Plant Photos',
-    content_vi: 'Chụp ảnh cây trồng thường xuyên để theo dõi sự phát triển và phát hiện sớm vấn đề.',
-    content_en: 'Take plant photos regularly to track growth and detect problems early.',
-    conditions: {},
-    actionable: true,
-    action_vi: 'Chụp ảnh',
-    action_en: 'Take photo'
-  }
-];
-
-/**
- * Get current month (1-12)
- */
-function getCurrentMonth() {
-  return new Date().getMonth() + 1;
+  return result.rows.map(row => ({
+    id: row.id,
+    name: lang === 'vi' ? row.name_vi : row.name_en,
+    icon: row.icon,
+    color: row.color,
+    backgroundColor: row.background_color,
+    priority: row.priority
+  }));
 }
 
 /**
- * Check if tip conditions match current context
+ * Get tips from database with optional filtering
  */
-function matchesConditions(tip, context) {
-  const conditions = tip.conditions || {};
+async function getTips({ category, regions, crops, lang = 'vi', limit = 10 }) {
+  let query = `
+    SELECT t.id, t.category_id, t.title_vi, t.title_en, t.content_vi, t.content_en,
+           t.actionable, t.action_vi, t.action_en, t.action_type, t.action_data,
+           t.regions, t.crops, t.crop_stages, t.conditions, t.urgency,
+           c.name_vi as cat_name_vi, c.name_en as cat_name_en,
+           c.icon as cat_icon, c.color as cat_color, c.background_color as cat_bg
+    FROM tips t
+    JOIN tip_categories c ON t.category_id = c.id
+    WHERE t.active = true
+      AND c.active = true
+      AND (t.valid_from IS NULL OR t.valid_from <= NOW())
+      AND (t.valid_to IS NULL OR t.valid_to >= NOW())
+  `;
 
-  // No conditions = always matches
-  if (Object.keys(conditions).length === 0) return true;
+  const params = [];
+  let paramIndex = 1;
 
-  // Check temperature conditions
-  if (conditions.temp_above && context.temp_c && context.temp_c < conditions.temp_above) {
-    return false;
-  }
-  if (conditions.temp_below && context.temp_c && context.temp_c > conditions.temp_below) {
-    return false;
-  }
-
-  // Check humidity conditions
-  if (conditions.humidity_above && context.humidity && context.humidity < conditions.humidity_above) {
-    return false;
-  }
-  if (conditions.humidity_below && context.humidity && context.humidity > conditions.humidity_below) {
-    return false;
-  }
-
-  // Check rain chance
-  if (conditions.rain_chance_above && context.rain_chance && context.rain_chance < conditions.rain_chance_above) {
-    return false;
+  if (category) {
+    query += ` AND t.category_id = $${paramIndex}`;
+    params.push(category);
+    paramIndex++;
   }
 
-  // Check wind conditions
-  if (conditions.wind_above && context.wind_kph && context.wind_kph < conditions.wind_above) {
-    return false;
+  if (regions && regions.length > 0) {
+    query += ` AND (t.regions && $${paramIndex} OR t.regions = '{}')`;
+    params.push(regions);
+    paramIndex++;
   }
 
-  // Check month conditions
-  if (conditions.month_in && !conditions.month_in.includes(getCurrentMonth())) {
-    return false;
+  if (crops && crops.length > 0) {
+    query += ` AND (t.crops && $${paramIndex} OR t.crops = '{}')`;
+    params.push(crops);
+    paramIndex++;
   }
 
-  // Check after rain condition
-  if (conditions.after_rain && !context.after_rain) {
-    return false;
-  }
+  query += ` ORDER BY c.priority ASC, t.created_at DESC LIMIT $${paramIndex}`;
+  params.push(limit);
 
-  return true;
+  const result = await pool.query(query, params);
+
+  return result.rows.map(row => formatTip(row, lang));
 }
 
 /**
- * Fetch weather data for context
+ * Get contextual tips based on weather and region
+ */
+async function getContextualTips({ region, weather, lang = 'vi', limit = 3 }) {
+  // Build conditions filter based on weather
+  let conditionsFilter = '';
+  const params = [];
+  let paramIndex = 1;
+
+  if (region) {
+    conditionsFilter += ` AND ($${paramIndex} = ANY(t.regions) OR t.regions = '{}')`;
+    params.push(region);
+    paramIndex++;
+  }
+
+  // Weather-based conditions
+  const weatherConditions = [];
+  if (weather) {
+    if (weather.temp_c !== undefined) {
+      weatherConditions.push(`(t.conditions->>'temp_above' IS NULL OR (t.conditions->>'temp_above')::float <= ${weather.temp_c})`);
+      weatherConditions.push(`(t.conditions->>'temp_below' IS NULL OR (t.conditions->>'temp_below')::float >= ${weather.temp_c})`);
+    }
+    if (weather.humidity !== undefined) {
+      weatherConditions.push(`(t.conditions->>'humidity_above' IS NULL OR (t.conditions->>'humidity_above')::float <= ${weather.humidity})`);
+      weatherConditions.push(`(t.conditions->>'humidity_below' IS NULL OR (t.conditions->>'humidity_below')::float >= ${weather.humidity})`);
+    }
+    if (weather.rain_chance !== undefined) {
+      weatherConditions.push(`(t.conditions->>'rain_chance_above' IS NULL OR (t.conditions->>'rain_chance_above')::float <= ${weather.rain_chance})`);
+    }
+    if (weather.wind_kph !== undefined) {
+      weatherConditions.push(`(t.conditions->>'wind_above' IS NULL OR (t.conditions->>'wind_above')::float <= ${weather.wind_kph})`);
+    }
+  }
+
+  // Current month for seasonal tips
+  const currentMonth = new Date().getMonth() + 1;
+
+  const query = `
+    SELECT t.id, t.category_id, t.title_vi, t.title_en, t.content_vi, t.content_en,
+           t.actionable, t.action_vi, t.action_en, t.action_type, t.action_data,
+           t.regions, t.crops, t.crop_stages, t.conditions, t.urgency,
+           c.name_vi as cat_name_vi, c.name_en as cat_name_en,
+           c.icon as cat_icon, c.color as cat_color, c.background_color as cat_bg,
+           c.priority as cat_priority
+    FROM tips t
+    JOIN tip_categories c ON t.category_id = c.id
+    WHERE t.active = true
+      AND c.active = true
+      AND (t.valid_from IS NULL OR t.valid_from <= NOW())
+      AND (t.valid_to IS NULL OR t.valid_to >= NOW())
+      ${conditionsFilter}
+      ${weatherConditions.length > 0 ? 'AND ' + weatherConditions.join(' AND ') : ''}
+      AND (
+        t.conditions->>'month_in' IS NULL
+        OR t.conditions->>'month_in' LIKE '%${currentMonth}%'
+      )
+    ORDER BY
+      c.priority ASC,
+      t.urgency = 'critical' DESC,
+      t.urgency = 'high' DESC,
+      RANDOM()
+    LIMIT $${paramIndex}
+  `;
+  params.push(limit);
+
+  const result = await pool.query(query, params);
+
+  // If not enough tips found, get general tips
+  if (result.rows.length < limit) {
+    const remaining = limit - result.rows.length;
+    const existingIds = result.rows.map(r => r.id);
+
+    const generalQuery = `
+      SELECT t.id, t.category_id, t.title_vi, t.title_en, t.content_vi, t.content_en,
+             t.actionable, t.action_vi, t.action_en, t.action_type, t.action_data,
+             t.regions, t.crops, t.crop_stages, t.conditions, t.urgency,
+             c.name_vi as cat_name_vi, c.name_en as cat_name_en,
+             c.icon as cat_icon, c.color as cat_color, c.background_color as cat_bg,
+             c.priority as cat_priority
+      FROM tips t
+      JOIN tip_categories c ON t.category_id = c.id
+      WHERE t.active = true
+        AND c.active = true
+        AND (t.valid_from IS NULL OR t.valid_from <= NOW())
+        AND (t.valid_to IS NULL OR t.valid_to >= NOW())
+        ${existingIds.length > 0 ? `AND t.id NOT IN (${existingIds.map((_, i) => `$${i + 1}`).join(',')})` : ''}
+      ORDER BY RANDOM()
+      LIMIT $${existingIds.length + 1}
+    `;
+
+    const generalResult = await pool.query(generalQuery, [...existingIds, remaining]);
+    result.rows.push(...generalResult.rows);
+  }
+
+  return result.rows.map(row => formatTip(row, lang));
+}
+
+/**
+ * Format a database row to API response format
+ */
+function formatTip(row, lang = 'vi') {
+  return {
+    id: row.id,
+    category: {
+      id: row.category_id,
+      name: lang === 'vi' ? row.cat_name_vi : row.cat_name_en,
+      icon: row.cat_icon,
+      color: row.cat_color,
+      backgroundColor: row.cat_bg
+    },
+    title: lang === 'vi' ? row.title_vi : row.title_en,
+    content: lang === 'vi' ? row.content_vi : row.content_en,
+    actionable: row.actionable,
+    action: row.actionable ? (lang === 'vi' ? row.action_vi : row.action_en) : null,
+    actionType: row.action_type,
+    actionData: row.action_data,
+    urgency: row.urgency,
+    regions: row.regions || [],
+    crops: row.crops || []
+  };
+}
+
+/**
+ * Record tip interaction
+ */
+async function recordInteraction(tipId, deviceId, type, region, language) {
+  try {
+    await pool.query(`
+      INSERT INTO tip_interactions (tip_id, device_id, interaction_type, region, language)
+      VALUES ($1, $2, $3, $4, $5)
+    `, [tipId, deviceId, type, region, language]);
+
+    // Update tip counters
+    const counterField = type === 'view' ? 'view_count'
+      : type === 'dismiss' ? 'dismiss_count'
+      : type === 'action' ? 'action_count'
+      : null;
+
+    if (counterField) {
+      await pool.query(`
+        UPDATE tips SET ${counterField} = ${counterField} + 1, updated_at = NOW()
+        WHERE id = $1
+      `, [tipId]);
+    }
+  } catch (err) {
+    console.error('Error recording interaction:', err.message);
+  }
+}
+
+/**
+ * Fetch weather context from Weather API
  */
 async function getWeatherContext(location) {
   try {
@@ -451,257 +261,292 @@ async function getWeatherContext(location) {
       body: JSON.stringify({ location, days: 1, lang: 'vi' })
     });
 
-    if (!response.ok) {
-      console.warn('[Tips] Failed to fetch weather context');
-      return null;
-    }
+    if (!response.ok) return null;
 
     const data = await response.json();
-    if (!data.success) return null;
+    if (!data.success || !data.data) return null;
+
+    const current = data.data.current;
+    const forecast = data.data.forecast?.forecastday?.[0]?.day;
 
     return {
-      temp_c: data.data.current?.temp_c,
-      humidity: data.data.current?.humidity,
-      wind_kph: data.data.forecast?.[0]?.day?.maxwind_kph,
-      rain_chance: data.data.forecast?.[0]?.day?.daily_chance_of_rain,
-      precip_mm: data.data.current?.precip_mm,
-      after_rain: (data.data.current?.precip_mm || 0) > 0
+      temp_c: current?.temp_c,
+      humidity: current?.humidity,
+      wind_kph: current?.wind_kph,
+      rain_chance: forecast?.daily_chance_of_rain,
+      precip_mm: current?.precip_mm,
+      after_rain: current?.precip_mm > 0
     };
-  } catch (error) {
-    console.warn('[Tips] Error fetching weather:', error.message);
+  } catch (err) {
+    console.error('Weather API error:', err.message);
     return null;
   }
 }
 
-// Health check endpoint
-app.get('/', (req, res) => {
+// ============================================================================
+// API ENDPOINTS
+// ============================================================================
+
+/**
+ * Health check
+ */
+app.get('/', async (req, res) => {
+  let dbStatus = 'unknown';
+  let tipCount = 0;
+
+  try {
+    const result = await pool.query('SELECT COUNT(*) FROM tips WHERE active = true');
+    tipCount = parseInt(result.rows[0].count);
+    dbStatus = 'connected';
+  } catch (err) {
+    dbStatus = 'error: ' + err.message;
+  }
+
   res.json({
     status: 'ok',
     message: 'Nông Trí - Tips MCP Server',
-    version: '1.0.0',
+    version: '2.0.0',
     timestamp: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development',
+    database: dbStatus,
+    total_tips: tipCount,
     tools: [
-      'get_tips',
       'get_tip_categories',
-      'get_contextual_tips'
-    ],
-    categories: Object.keys(TIP_CATEGORIES),
-    total_tips: TIPS_DATABASE.length
+      'get_tips',
+      'get_contextual_tips',
+      'record_interaction'
+    ]
   });
 });
 
 /**
- * Tool 1: Get all tip categories with colors
+ * Get all tip categories
  */
-app.get('/tools/get_tip_categories', (req, res) => {
-  const { lang } = req.query;
-  const language = lang || 'vi';
+app.get('/tools/get_tip_categories', async (req, res) => {
+  try {
+    const lang = req.query.lang || 'vi';
+    const categories = await getCategories(lang);
 
-  const categories = Object.values(TIP_CATEGORIES).map(cat => ({
-    id: cat.id,
-    name: language === 'vi' ? cat.name_vi : cat.name_en,
-    icon: cat.icon,
-    color: cat.color,
-    backgroundColor: cat.backgroundColor,
-    priority: cat.priority
-  }));
-
-  // Sort by priority
-  categories.sort((a, b) => a.priority - b.priority);
-
-  res.json({
-    success: true,
-    tool: 'get_tip_categories',
-    data: categories
-  });
-});
-
-/**
- * Tool 2: Get tips by category or all tips
- */
-app.post('/tools/get_tips', (req, res) => {
-  const { category, lang, limit } = req.body;
-  const language = lang || 'vi';
-  const maxTips = limit || 10;
-
-  let tips = TIPS_DATABASE;
-
-  // Filter by category if specified
-  if (category) {
-    tips = tips.filter(t => t.category === category);
+    res.json({
+      success: true,
+      tool: 'get_tip_categories',
+      data: categories
+    });
+  } catch (err) {
+    console.error('Error getting categories:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
   }
-
-  // Map to response format
-  const response = tips.slice(0, maxTips).map(tip => {
-    const cat = TIP_CATEGORIES[tip.category];
-    return {
-      id: tip.id,
-      category: {
-        id: cat.id,
-        name: language === 'vi' ? cat.name_vi : cat.name_en,
-        icon: cat.icon,
-        color: cat.color,
-        backgroundColor: cat.backgroundColor
-      },
-      title: language === 'vi' ? tip.title_vi : tip.title_en,
-      content: language === 'vi' ? tip.content_vi : tip.content_en,
-      actionable: tip.actionable || false,
-      action: tip.actionable
-        ? (language === 'vi' ? tip.action_vi : tip.action_en)
-        : null
-    };
-  });
-
-  res.json({
-    success: true,
-    tool: 'get_tips',
-    data: response
-  });
 });
 
 /**
- * Tool 3: Get contextual tips based on weather and location
- * This is the main endpoint for the mobile app
+ * Get tips with optional filtering
+ */
+app.post('/tools/get_tips', async (req, res) => {
+  try {
+    const { category, regions, crops, lang = 'vi', limit = 10 } = req.body;
+
+    const tips = await getTips({
+      category,
+      regions: regions ? (Array.isArray(regions) ? regions : [regions]) : null,
+      crops: crops ? (Array.isArray(crops) ? crops : [crops]) : null,
+      lang,
+      limit
+    });
+
+    res.json({
+      success: true,
+      tool: 'get_tips',
+      data: tips
+    });
+  } catch (err) {
+    console.error('Error getting tips:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+/**
+ * Get contextual tips based on location and weather
  */
 app.post('/tools/get_contextual_tips', async (req, res) => {
   try {
-    const { location, lang, limit, device_id } = req.body;
-    const language = lang || 'vi';
-    const maxTips = limit || 3;
+    const { location, region, lang = 'vi', limit = 3, device_id } = req.body;
 
-    // Get weather context if location provided
-    let context = {};
-    if (location) {
-      const weatherContext = await getWeatherContext(location);
-      if (weatherContext) {
-        context = weatherContext;
+    // Determine region from location if not provided
+    let targetRegion = region;
+    if (!targetRegion && location) {
+      // Simple region detection from location name
+      const locationLower = location.toLowerCase();
+      if (locationLower.includes('ho chi minh') || locationLower.includes('can tho') ||
+          locationLower.includes('long an') || locationLower.includes('ben tre') ||
+          locationLower.includes('vinh long') || locationLower.includes('dong thap') ||
+          locationLower.includes('an giang') || locationLower.includes('kien giang') ||
+          locationLower.includes('ca mau') || locationLower.includes('bac lieu') ||
+          locationLower.includes('soc trang') || locationLower.includes('tra vinh') ||
+          locationLower.includes('hau giang') || locationLower.includes('tien giang')) {
+        targetRegion = 'mekong_delta';
+      } else if (locationLower.includes('da lat') || locationLower.includes('buon ma thuot') ||
+                 locationLower.includes('gia lai') || locationLower.includes('kon tum') ||
+                 locationLower.includes('dak lak') || locationLower.includes('dak nong') ||
+                 locationLower.includes('lam dong')) {
+        targetRegion = 'central_highlands';
+      } else if (locationLower.includes('hanoi') || locationLower.includes('ha noi') ||
+                 locationLower.includes('hai phong') || locationLower.includes('nam dinh') ||
+                 locationLower.includes('thai binh') || locationLower.includes('ninh binh') ||
+                 locationLower.includes('ha nam') || locationLower.includes('hung yen') ||
+                 locationLower.includes('hai duong') || locationLower.includes('bac ninh') ||
+                 locationLower.includes('vinh phuc')) {
+        targetRegion = 'red_river';
+      } else if (locationLower.includes('da nang') || locationLower.includes('nha trang') ||
+                 locationLower.includes('quy nhon') || locationLower.includes('phan thiet') ||
+                 locationLower.includes('vung tau') || locationLower.includes('hue')) {
+        targetRegion = 'coastal';
       }
     }
 
-    // Filter tips that match current context
-    const matchingTips = TIPS_DATABASE.filter(tip => matchesConditions(tip, context));
-
-    // Sort by category priority (weather alerts first, etc.)
-    matchingTips.sort((a, b) => {
-      const priorityA = TIP_CATEGORIES[a.category].priority;
-      const priorityB = TIP_CATEGORIES[b.category].priority;
-      return priorityA - priorityB;
-    });
-
-    // If no matching tips, return general tips
-    let selectedTips = matchingTips.length > 0
-      ? matchingTips
-      : TIPS_DATABASE.filter(t => t.category === 'general');
-
-    // Shuffle within same priority to add variety
-    // But keep weather alerts at top
-    const weatherAlerts = selectedTips.filter(t => t.category === 'weather_alert');
-    const otherTips = selectedTips.filter(t => t.category !== 'weather_alert');
-
-    // Shuffle other tips
-    for (let i = otherTips.length - 1; i > 0; i--) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [otherTips[i], otherTips[j]] = [otherTips[j], otherTips[i]];
+    // Get weather context if location provided
+    let weather = null;
+    if (location) {
+      weather = await getWeatherContext(location);
     }
 
-    selectedTips = [...weatherAlerts, ...otherTips].slice(0, maxTips);
-
-    // Map to response format
-    const response = selectedTips.map(tip => {
-      const cat = TIP_CATEGORIES[tip.category];
-      return {
-        id: tip.id,
-        category: {
-          id: cat.id,
-          name: language === 'vi' ? cat.name_vi : cat.name_en,
-          icon: cat.icon,
-          color: cat.color,
-          backgroundColor: cat.backgroundColor
-        },
-        title: language === 'vi' ? tip.title_vi : tip.title_en,
-        content: language === 'vi' ? tip.content_vi : tip.content_en,
-        actionable: tip.actionable || false,
-        action: tip.actionable
-          ? (language === 'vi' ? tip.action_vi : tip.action_en)
-          : null
-      };
+    const tips = await getContextualTips({
+      region: targetRegion,
+      weather,
+      lang,
+      limit
     });
 
     res.json({
       success: true,
       tool: 'get_contextual_tips',
       data: {
-        tips: response,
+        tips,
         context: {
-          location: location || null,
-          weather_based: Object.keys(context).length > 0,
-          current_month: getCurrentMonth()
+          location,
+          region: targetRegion,
+          weather_based: weather !== null,
+          current_month: new Date().getMonth() + 1
         }
       }
     });
-  } catch (error) {
-    console.error('[Tips] Error getting contextual tips:', error);
+  } catch (err) {
+    console.error('Error getting contextual tips:', err);
     res.status(500).json({
       success: false,
-      error: 'Failed to get contextual tips',
-      details: error.message
+      error: err.message
     });
   }
 });
 
 /**
- * Tool 4: Get a single random tip (for quick display)
+ * Record tip interaction (view, dismiss, action)
  */
-app.get('/tools/get_random_tip', (req, res) => {
-  const { lang, category } = req.query;
-  const language = lang || 'vi';
+app.post('/tools/record_interaction', async (req, res) => {
+  try {
+    const { tip_id, device_id, interaction_type, region, language = 'vi' } = req.body;
 
-  let tips = TIPS_DATABASE;
-  if (category) {
-    tips = tips.filter(t => t.category === category);
-  }
-
-  const randomTip = tips[Math.floor(Math.random() * tips.length)];
-  const cat = TIP_CATEGORIES[randomTip.category];
-
-  res.json({
-    success: true,
-    tool: 'get_random_tip',
-    data: {
-      id: randomTip.id,
-      category: {
-        id: cat.id,
-        name: language === 'vi' ? cat.name_vi : cat.name_en,
-        icon: cat.icon,
-        color: cat.color,
-        backgroundColor: cat.backgroundColor
-      },
-      title: language === 'vi' ? randomTip.title_vi : randomTip.title_en,
-      content: language === 'vi' ? randomTip.content_vi : randomTip.content_en,
-      actionable: randomTip.actionable || false,
-      action: randomTip.actionable
-        ? (language === 'vi' ? randomTip.action_vi : randomTip.action_en)
-        : null
+    if (!tip_id || !device_id || !interaction_type) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields: tip_id, device_id, interaction_type'
+      });
     }
-  });
+
+    await recordInteraction(tip_id, device_id, interaction_type, region, language);
+
+    res.json({
+      success: true,
+      tool: 'record_interaction',
+      data: { recorded: true }
+    });
+  } catch (err) {
+    console.error('Error recording interaction:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
 });
 
-// Start server
+/**
+ * Get a random tip (for variety)
+ */
+app.get('/tools/get_random_tip', async (req, res) => {
+  try {
+    const { lang = 'vi', category } = req.query;
+
+    let query = `
+      SELECT t.id, t.category_id, t.title_vi, t.title_en, t.content_vi, t.content_en,
+             t.actionable, t.action_vi, t.action_en, t.action_type, t.action_data,
+             t.regions, t.crops, t.crop_stages, t.conditions, t.urgency,
+             c.name_vi as cat_name_vi, c.name_en as cat_name_en,
+             c.icon as cat_icon, c.color as cat_color, c.background_color as cat_bg
+      FROM tips t
+      JOIN tip_categories c ON t.category_id = c.id
+      WHERE t.active = true AND c.active = true
+        AND (t.valid_from IS NULL OR t.valid_from <= NOW())
+        AND (t.valid_to IS NULL OR t.valid_to >= NOW())
+    `;
+
+    const params = [];
+    if (category) {
+      query += ' AND t.category_id = $1';
+      params.push(category);
+    }
+
+    query += ' ORDER BY RANDOM() LIMIT 1';
+
+    const result = await pool.query(query, params);
+
+    if (result.rows.length === 0) {
+      return res.json({
+        success: true,
+        tool: 'get_random_tip',
+        data: null
+      });
+    }
+
+    res.json({
+      success: true,
+      tool: 'get_random_tip',
+      data: formatTip(result.rows[0], lang)
+    });
+  } catch (err) {
+    console.error('Error getting random tip:', err);
+    res.status(500).json({
+      success: false,
+      error: err.message
+    });
+  }
+});
+
+// ============================================================================
+// START SERVER
+// ============================================================================
+
 app.listen(PORT, () => {
-  const baseUrl = process.env.NODE_ENV === 'production'
-    ? `https://tips-mcp.up.railway.app`
-    : `http://localhost:${PORT}`;
-
-  console.log(`\n💡 Nông Trí - Tips MCP Server v1.0`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Server running on port ${PORT}\n`);
-  console.log(`MCP Tools Available:`);
-  console.log(`  Health: ${baseUrl}/`);
-  console.log(`  1. Get Categories: GET ${baseUrl}/tools/get_tip_categories`);
-  console.log(`  2. Get Tips: POST ${baseUrl}/tools/get_tips`);
-  console.log(`  3. Get Contextual Tips: POST ${baseUrl}/tools/get_contextual_tips`);
-  console.log(`  4. Get Random Tip: GET ${baseUrl}/tools/get_random_tip`);
-  console.log(`\nCategories: ${Object.keys(TIP_CATEGORIES).join(', ')}`);
-  console.log(`Total Tips: ${TIPS_DATABASE.length}\n`);
+  console.log(`
+╔════════════════════════════════════════════════════════════╗
+║           Nông Trí - Tips MCP Server v2.0.0                ║
+╠════════════════════════════════════════════════════════════╣
+║  Port: ${PORT}                                               ║
+║  Database: ${process.env.DATABASE_URL ? 'Railway PostgreSQL' : 'Not configured'}             ║
+║  Weather API: ${WEATHER_API_URL}    ║
+╠════════════════════════════════════════════════════════════╣
+║  Endpoints:                                                ║
+║    GET  /                          Health check            ║
+║    GET  /tools/get_tip_categories  Get categories          ║
+║    POST /tools/get_tips            Get tips with filters   ║
+║    POST /tools/get_contextual_tips Context-aware tips      ║
+║    POST /tools/record_interaction  Track tip interaction   ║
+║    GET  /tools/get_random_tip      Get random tip          ║
+╚════════════════════════════════════════════════════════════╝
+  `);
 });
+
+export default app;
