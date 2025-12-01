@@ -1,12 +1,12 @@
 # Tips MCP Server
 
-A database-backed MCP (Model Context Protocol) server for delivering AI-generated farming tips to Vietnamese farmers. Part of the [Nông Trí](https://github.com/eagleisbatman/nong-tri) agricultural AI assistant ecosystem.
+A database-backed MCP (Model Context Protocol) server for delivering AI-generated farming tips. Designed for agricultural applications with support for multiple regions and bilingual content.
 
 ## Features
 
 - **12 Tip Categories**: Weather alerts, pest & disease, irrigation, planting, crop care, harvesting, post-harvest, livestock, aquaculture, market trends, seasonal, and knowledge
-- **4 Vietnam Regions**: Mekong Delta, Central Highlands, Red River Delta, Coastal
-- **Bilingual Support**: Vietnamese and English content
+- **Regional Support**: Configurable regions (default: Vietnam agricultural zones)
+- **Bilingual Content**: Vietnamese and English support
 - **Weather-Triggered Tips**: Contextual tips based on weather conditions
 - **Interaction Tracking**: Analytics for views, dismissals, and actions
 - **RESTful API**: Easy integration with mobile and web clients
@@ -52,7 +52,7 @@ A database-backed MCP (Model Context Protocol) server for delivering AI-generate
 ### Prerequisites
 
 - Node.js 18+
-- PostgreSQL database with tips tables (see [migration](https://github.com/eagleisbatman/nong-tri/blob/main/src/db/migrations/036_create_tips_tables.js))
+- PostgreSQL database
 
 ### Local Development
 
@@ -68,17 +68,21 @@ npm install
 cp .env.example .env
 # Edit .env with your database credentials
 
+# Run database migrations (see Database Schema section)
+
 # Run in development mode
 npm run dev
 ```
 
-### Production Deployment (Railway)
+### Production Deployment
 
-1. Deploy from GitHub to Railway
-2. Add environment variables:
+Deploy to any Node.js hosting platform (Railway, Heroku, Render, etc.):
+
+1. Connect your repository
+2. Set environment variables:
    - `DATABASE_URL`: PostgreSQL connection string
    - `NODE_ENV`: `production`
-3. Railway auto-detects Node.js and deploys
+3. Deploy
 
 ## Environment Variables
 
@@ -90,14 +94,62 @@ npm run dev
 
 ## Database Schema
 
-The server requires the following tables:
+### Required Tables
 
-- `tip_categories` - Tip category definitions
-- `tips` - Main tips table with bilingual content
-- `tip_interactions` - User interaction tracking
-- `tip_generation_jobs` - AI generation job tracking
+```sql
+-- Tip categories
+CREATE TABLE tip_categories (
+  id VARCHAR(50) PRIMARY KEY,
+  name_vi VARCHAR(100) NOT NULL,
+  name_en VARCHAR(100) NOT NULL,
+  icon VARCHAR(10) NOT NULL,
+  color VARCHAR(7) NOT NULL,
+  background_color VARCHAR(7) NOT NULL,
+  priority INT NOT NULL DEFAULT 10,
+  active BOOLEAN DEFAULT true,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
+);
 
-See the [migration file](https://github.com/eagleisbatman/nong-tri/blob/main/src/db/migrations/036_create_tips_tables.js) for complete schema.
+-- Tips
+CREATE TABLE tips (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  category_id VARCHAR(50) REFERENCES tip_categories(id),
+  title_vi VARCHAR(100) NOT NULL,
+  title_en VARCHAR(100) NOT NULL,
+  content_vi TEXT NOT NULL,
+  content_en TEXT NOT NULL,
+  actionable BOOLEAN DEFAULT false,
+  action_vi VARCHAR(50),
+  action_en VARCHAR(50),
+  action_type VARCHAR(50),
+  action_data JSONB DEFAULT '{}',
+  regions TEXT[] DEFAULT '{}',
+  crops TEXT[] DEFAULT '{}',
+  conditions JSONB DEFAULT '{}',
+  urgency VARCHAR(20) DEFAULT 'medium',
+  valid_from TIMESTAMP,
+  valid_to TIMESTAMP,
+  source VARCHAR(50) DEFAULT 'manual',
+  active BOOLEAN DEFAULT true,
+  view_count INT DEFAULT 0,
+  dismiss_count INT DEFAULT 0,
+  action_count INT DEFAULT 0,
+  created_at TIMESTAMP DEFAULT NOW(),
+  updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Tip interactions
+CREATE TABLE tip_interactions (
+  id SERIAL PRIMARY KEY,
+  tip_id UUID REFERENCES tips(id) ON DELETE CASCADE,
+  device_id VARCHAR(255) NOT NULL,
+  interaction_type VARCHAR(20) NOT NULL,
+  region VARCHAR(50),
+  language VARCHAR(10) DEFAULT 'vi',
+  created_at TIMESTAMP DEFAULT NOW()
+);
+```
 
 ## Tip Categories
 
@@ -116,7 +168,7 @@ See the [migration file](https://github.com/eagleisbatman/nong-tri/blob/main/src
 | `seasonal` | Mùa vụ | Seasonal | 📅 |
 | `knowledge` | Kiến thức | Knowledge | 💡 |
 
-## Vietnam Regions
+## Default Regions (Vietnam)
 
 | Code | Vietnamese | English |
 |------|------------|---------|
@@ -125,11 +177,24 @@ See the [migration file](https://github.com/eagleisbatman/nong-tri/blob/main/src
 | `red_river` | Đồng bằng sông Hồng | Red River Delta |
 | `coastal` | Vùng ven biển | Coastal Region |
 
-## Related Projects
+## Customization
 
-- [Nông Trí Backend](https://github.com/eagleisbatman/nong-tri) - Main API server with AI chat
-- [Nông Trí Mobile](https://github.com/eagleisbatman/nong-tri-mobile) - Kotlin Multiplatform mobile app
+### Adding New Regions
+
+Insert into `tip_categories` and update the region detection logic in `src/index.js`.
+
+### Adding New Categories
+
+Insert into `tip_categories` table with appropriate icon and colors.
+
+### Changing Languages
+
+The server supports any language pair. Update the `_vi` and `_en` field naming convention as needed.
 
 ## License
 
 MIT License - see [LICENSE](LICENSE) for details.
+
+## Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request.
